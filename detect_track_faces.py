@@ -1,0 +1,167 @@
+import cv2
+import numpy as np
+import serial
+import time
+from serial.tools import list_ports
+
+def calculate_speed_and_direction(x_coord, distance):
+    if distance >= 100 and distance <= 200:
+        # To right
+        if x_coord < 100:
+            speed = 100
+            m1_dir = 0
+            m2_dir = 0
+            m3_dir = 1
+            m4_dir = 1
+        # To right
+        elif x_coord > 100 and x_coord < 220:
+            speed = 80
+            m1_dir = 0
+            m2_dir = 0
+            m3_dir = 1
+            m4_dir = 1
+        # At the center
+        elif x_coord >= 220 and x_coord <=420:
+            speed = 0
+            m1_dir = 0
+            m2_dir = 0
+            m3_dir = 1
+            m4_dir = 1
+            
+        #  To the left
+        elif x_coord > 420 and x_coord < 500:
+            speed = 80
+            m1_dir = 1
+            m2_dir = 1
+            m3_dir = 0
+            m4_dir = 0
+        #  To the left
+        elif x_coord > 500:
+            speed = 100
+            m1_dir = 1
+            m2_dir = 1
+            m3_dir = 0
+            m4_dir = 0
+    # Backwards
+    elif distance < 100:
+            speed = 100
+            m1_dir = 0
+            m2_dir = 1
+            m3_dir = 0
+            m4_dir = 1
+    # Forward
+    elif distance > 200:
+        speed = 100
+        m1_dir = 1
+        m2_dir = 0
+        m3_dir = 1
+        m4_dir = 0
+    return speed, m1_dir, m2_dir, m3_dir, m4_dir
+
+def find_arduino_port():
+    ports = list_ports.comports()
+    for port in ports:
+        if 'Arduino' in port.description or 'USB Serial Device' in port.description:
+            return port.device
+    return None
+
+def calculate_velocity(x, y, z, distance):
+    target_distance = 100  # 100 centimeters = 1 meter
+    distance_error = target_distance - distance
+
+    # Calculate linear velocity in the X and Y direction (in centimeters)
+    linear_velocity_x = x / 100
+    linear_velocity_y = y / 100
+
+    # Calculate angular velocity in the Z direction
+    angular_velocity_z = distance_error / 100
+
+    return linear_velocity_x, linear_velocity_y, angular_velocity_z
+
+def read_arduino_response():
+    # print('reading from Arduino')
+    while arduino.in_waiting > 0:
+        response = arduino.readline().decode().strip()
+        print(f"Arduino response: {response}")
+
+def send_data_to_arduino(speed, m1_dir, m2_dir, m3_dir, m4_dir):
+    print(f'MOVE {speed} {m1_dir} {m2_dir} {m3_dir} {m4_dir}\n')
+    arduino.write(f'MOVE {speed} {m1_dir} {m2_dir} {m3_dir} {m4_dir}\n'.encode())
+    
+
+arduino_serial_port = find_arduino_port()
+if arduino_serial_port is None:
+    print("Arduino not found. Please check the connection and try again.")
+    exit(1)
+else:
+    print("Arduino found at: " + str(arduino_serial_port))
+
+serial_baud_rate = 115200
+arduino = serial.Serial(arduino_serial_port, serial_baud_rate, timeout=1)
+time.sleep(2)
+
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FPS, 10)  # Set framerate to 10
+
+_, frame = cap.read()
+
+# Display instructions on the frame
+instruction_text = "Select a ROI and then press SPACE or ENTER button!"
+cv2.putText(frame, instruction_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+cv2.imshow("Tracking", frame)
+cv2.waitKey(1000)  # Wait for 1 second to give the user time to read the instructions
+
+bbox = cv2.selectROI("Tracking", frame, False)
+tracker = cv2.TrackerCSRT_create()
+tracker.init(frame, bbox)
+
+# Actual height of the object (in meters)
+actual_height = 0.3
+
+# Focal length of the camera (in pixels)
+focal_length = 500
+
+while True:
+    # print("72")
+    start_time = time.time()
+    _, frame = cap.read()
+
+    success, bbox = tracker.update(frame)
+    if success:
+        # print("77")
+        x, y, w, h = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+        # Calculate coordinates and distance
+        x_coord = x + w // 2
+        y_coord = y + h // 2
+        
+        # Estimate distance
+        distance = (actual_height * focal_length) / h
+        distance = (round(distance, 2))*100  # Round to 2 decimal places
+
+        # Prints results
+        coord_text = f"X:{x_coord}, Distance:{distance}"
+        cv2.putText(frame, coord_text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+
+        # Draw frame to the right
+        cv2.line(frame,(420, 0),(420,600),(0,255,0), thickness=1)
+        # Draw frame to the left
+        cv2.line(frame,(220, 0),(220,600),(0,255,0), thickness=1)
+        
+        
+        data = calculate_speed_and_direction(x_coord, distance)
+        send_data_to_arduino(data[0], data[1], data[2], data[3], data[4])
+
+    cv2.imshow("Tracking", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        arduino.close()
+        break
+
+    time.sleep(max(1./10 - (time.time() - start_time), 0))  # 10 FPS
+
+
+cap.release()
+cv2.destroyAllWindows()
+arduino.close()
